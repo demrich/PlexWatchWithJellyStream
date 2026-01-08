@@ -1,21 +1,23 @@
-# PlexWatch - Your Plex Dashboard in Discord
+# PlexWatch - Your Plex & Jellyfin Dashboard in Discord
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 [![Version](https://img.shields.io/github/release/nichtlegacy/PlexWatch.svg?style=flat-square)](https://github.com/nichtlegacy/PlexWatch/releases/latest)
 ![Python](https://img.shields.io/badge/python-3.8+-yellow.svg)
 ![Discord.py](https://img.shields.io/badge/discord.py-2.0+-blueviolet.svg)
 ![Plex](https://img.shields.io/badge/plex-compatible-orange.svg)
+![Jellyfin](https://img.shields.io/badge/jellyfin-compatible-purple.svg)
 
-PlexWatch is a Discord bot that brings your Plex media server to life with a real-time dashboard. Monitor active streams, track SABnzbd downloads, and check server uptime—all directly in your Discord server. Designed for Plex enthusiasts, PlexWatch delivers a sleek, embed-based interface to keep you informed about your media ecosystem.
+PlexWatch is a Discord bot that brings your Plex media server to life with a real-time dashboard. Monitor active streams from both Plex and Jellyfin, track SABnzbd downloads, and check server uptime—all directly in your Discord server. Designed for media enthusiasts, PlexWatch delivers a sleek, embed-based interface to keep you informed about your media ecosystem.
 
 
 ## Features
 
 - **Plex Monitoring**: Displays active streams with details like title, user, progress, quality, and player info (up to 8 streams).
+- **Jellyfin Support**: Optionally display Jellyfin streams alongside Plex streams—same format, marked with `(JF)` suffix.
 - **SABnzbd Integration**: Tracks ongoing downloads with progress, speed, and size.
 - **Uptime Tracking**: Shows server uptime over 24h, 7d, and 30d with percentage and duration.
 - **Customizable Dashboard**: Updates every minute with a clean Discord embed, fully configurable via JSON.
-- **Bot Presence**: Reflects Plex status and stream count in the bot's Discord status.
+- **Bot Presence**: Reflects Plex/Jellyfin status and combined stream count in the bot's Discord status.
 - **Logging**: Detailed logs for debugging and tracking bot activity.
 
 
@@ -58,6 +60,7 @@ Here’s how PlexWatch looks in action:
 ### Prerequisites
 - Python 3.8+
 - A Plex Media Server with API access
+- Jellyfin Media Server (optional, for Jellyfin stream display)
 - SABnzbd (optional, for download tracking)
 - Uptime Kuma (optional, for uptime monitoring)
 - A Discord bot token
@@ -88,12 +91,13 @@ Here’s how PlexWatch looks in action:
    
 ### Installation docker
 1. **Install the container and edit the required environment variables:**
-	- See the full list of available envs further below. 
+	- See the full list of available envs further below.
 	- Make sure to mount the volume for persistent config changes.
-```
+	- A `docker-compose.yml` file is included in the repository.
+```yaml
 services:
   plexwatch:
-    image: ghcr.io/nichtlegacy/plexwatch:latest
+    image: ghcr.io/demrich/plexwatchwithjellystream:latest
     container_name: plexwatch
     environment:
       - RUNNING_IN_DOCKER=true
@@ -102,12 +106,16 @@ services:
       - PLEX_URL=https://your-plex-server:32400
       - PLEX_TOKEN=your_plex_token
       - CHANNEL_ID=your_discord_channel_id
-      
-      # Optional
+
+      # Optional - Jellyfin streams
+      # - JELLYFIN_URL=http://192.168.1.1:8096
+      # - JELLYFIN_API_KEY=your_jellyfin_api_key
+
+      # Optional - SABnzbd
       # - SABNZBD_URL=http://192.168.1.1:8282
       # - SABNZBD_API_KEY=your_sabnzbd_api_key
 
-      # Optional
+      # Optional - Uptime Kuma
       # - UPTIME_URL=http://192.168.1.1:3001
       # - UPTIME_USERNAME=your_kuma_username
       # - UPTIME_PASSWORD=your_kuma_password
@@ -116,7 +124,7 @@ services:
     volumes:
       - ./plexwatch:/app/data
     restart: unless-stopped
-```   
+```
 
 2. **Start the container to run the bot**
 
@@ -129,6 +137,8 @@ DISCORD_AUTHORIZED_USERS=123456789012345678,987654321098765432  # Comma-separate
 PLEX_URL=https://your-plex-server:32400
 PLEX_TOKEN=your_plex_token
 CHANNEL_ID=your_discord_channel_id
+JELLYFIN_URL=http://your-jellyfin-server:8096
+JELLYFIN_API_KEY=your_jellyfin_api_key
 SABNZBD_URL=http://your-sabnzbd-server:8080
 SABNZBD_API_KEY=your_sabnzbd_api_key
 UPTIME_URL=https://your-uptime-kuma-server:3001
@@ -142,6 +152,8 @@ UPTIME_MONITOR_ID=your_monitor_id
 - `PLEX_URL`: URL to your Plex server (include protocol and port).
 - `PLEX_TOKEN`: Your Plex API token (see [Plex Support](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)).
 - `CHANNEL_ID`: Discord channel ID where the dashboard embed appears.
+- `JELLYFIN_URL`: Optional, URL to your Jellyfin server (e.g., http://192.168.1.1:8096).
+- `JELLYFIN_API_KEY`: Optional, API key from Jellyfin (Dashboard → API Keys → Create). When both `JELLYFIN_URL` and `JELLYFIN_API_KEY` are set, Jellyfin streams will appear alongside Plex streams.
 - `SABNZBD_URL` & `SABNZBD_API_KEY`: Optional, for SABnzbd integration (get API key from SABnzbd settings).
 - `UPTIME_URL`: Optional, URL to your Uptime Kuma server (e.g., https://uptime.example.com:3001)
 - `UPTIME_USERNAME`: Optional, Username for your Uptime Kuma instance
@@ -235,21 +247,22 @@ PlexWatch is customized via `/data/config.json`. Below is the structure with exa
 
 ## User Mapping
 
-The `/data/user_mapping.json` file allows you to personalize Plex usernames by mapping them to custom display names shown in the dashboard. This keeps the interface clean and user-friendly.
+The `/data/user_mapping.json` file allows you to personalize Plex and Jellyfin usernames by mapping them to custom display names shown in the dashboard. This keeps the interface clean and user-friendly.
 
 **Example `user_mapping.json`**:
 ```json
 {
     "nichtlegacy": "LEGACY",
     "plexfan99": "Fan",
-    "moviebuff": "Buff"
+    "moviebuff": "Buff",
+    "jellyfin_user": "JellyFan"
 }
 ```
 
-- **Key**: The exact Plex username (case-sensitive).
+- **Key**: The exact Plex or Jellyfin username (case-sensitive).
 - **Value**: The custom name displayed in the dashboard.
 
-If a username is listed, its mapped name is used (e.g., "Alex" instead of "user123"); otherwise, the original Plex username is shown.
+If a username is listed, its mapped name is used (e.g., "Alex" instead of "user123"); otherwise, the original username is shown. This works for both Plex and Jellyfin users.
 
 ## Logging
 Logs are stored in `/logs/plexwatch_debug.log`:
@@ -274,6 +287,7 @@ PlexWatch uses Discord slash commands (synced on startup):
 
 ## Acknowledgements
 - [Plex](https://www.plex.tv) - For providing an excellent media server platform that powers the core monitoring capabilities of PlexWatch.
+- [Jellyfin](https://jellyfin.org) - The free software media system whose streams can be displayed alongside Plex.
 - [PlexAPI](https://github.com/pkkid/python-plexapi) - A Python library for interacting with Plex servers, essential for stream and library tracking.
 - [discord.py](https://github.com/Rapptz/discord.py) - The backbone of the Discord bot functionality, making embeds and real-time updates possible.
 - [SABnzbd](https://sabnzbd.org) - A powerful download manager integrated to monitor ongoing downloads within the dashboard.
