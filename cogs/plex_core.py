@@ -396,11 +396,9 @@ class PlexCore(commands.Cog):
             user = session.get("UserName", "Unknown")
             displayed_user = self.user_mapping.get(user, user)
 
-            # Determine content type and emoji
+            # Determine content type and emoji (video only - no music library)
             media_type = now_playing.get("Type", "Video")
-            if media_type == "Audio":
-                content_emoji = "🎵"
-            elif media_type == "Episode":
+            if media_type == "Episode":
                 content_emoji = "📺"
             else:
                 content_emoji = "🎥"
@@ -408,10 +406,10 @@ class PlexCore(commands.Cog):
             # Get formatted title
             title = self._get_jellyfin_formatted_title(now_playing)
 
-            # Calculate progress
+            # Calculate progress with explicit safety check
             position_ticks = play_state.get("PositionTicks", 0)
             runtime_ticks = now_playing.get("RunTimeTicks", 0)
-            progress_percent = (position_ticks / runtime_ticks * 100) if runtime_ticks else 0
+            progress_percent = (position_ticks / runtime_ticks * 100) if runtime_ticks > 0 else 0
 
             is_paused = play_state.get("IsPaused", False)
             progress_display = "⏸️" if is_paused else f"[{'▓' * int(progress_percent / 10)}{'░' * (10 - int(progress_percent / 10))}] {progress_percent:.1f}%"
@@ -423,41 +421,31 @@ class PlexCore(commands.Cog):
             current_time = self._format_jellyfin_time(current_seconds, total_seconds)
             total_time = self._format_jellyfin_time(total_seconds, total_seconds)
 
-            # Get quality info
+            # Get video quality info
             media_streams = now_playing.get("MediaStreams", [])
             video_stream = next((s for s in media_streams if s.get("Type") == "Video"), None)
-            audio_stream = next((s for s in media_streams if s.get("Type") == "Audio"), None)
 
-            if media_type == "Audio":
-                # For audio, show audio quality
-                if audio_stream:
-                    bit_depth = audio_stream.get("BitDepth", "")
-                    sample_rate = audio_stream.get("SampleRate", 0)
-                    quality = f"{bit_depth}bit" if bit_depth else ""
-                    if sample_rate:
-                        quality += f" {sample_rate // 1000}kHz" if quality else f"{sample_rate // 1000}kHz"
-                    quality = quality if quality else "Audio"
+            if video_stream:
+                height = video_stream.get("Height")
+                if height and height >= 2160:
+                    quality = "4K"
+                elif height:
+                    quality = f"{height}p"
                 else:
-                    quality = "Audio"
+                    quality = "Video"
             else:
-                # For video, show resolution
-                if video_stream:
-                    height = video_stream.get("Height", 1080)
-                    quality = "4K" if height >= 2160 else f"{height}p"
-                else:
-                    quality = "1080p"
+                quality = "Video"
 
             # Check if transcoding
             transcode_info = session.get("TranscodingInfo")
             transcode_emoji = "🔄" if transcode_info else "⏯️"
 
-            # Get bitrate
-            if transcode_info and transcode_info.get("Bitrate"):
-                bitrate = f"{transcode_info['Bitrate'] / 1_000_000:.1f} Mbps"
-            elif now_playing.get("Bitrate"):
-                bitrate = f"{now_playing['Bitrate'] / 1_000_000:.1f} Mbps"
-            else:
-                bitrate = ""
+            # Get bitrate (only if > 0)
+            bitrate = ""
+            if transcode_info and transcode_info.get("Bitrate", 0) > 0:
+                bitrate = f" {transcode_info['Bitrate'] / 1_000_000:.1f} Mbps"
+            elif now_playing.get("Bitrate", 0) > 0:
+                bitrate = f" {now_playing['Bitrate'] / 1_000_000:.1f} Mbps"
 
             # Get client/player name
             client = session.get("Client", "Unknown")
@@ -467,7 +455,7 @@ class PlexCore(commands.Cog):
             return (
                 f"**```{content_emoji} {title} | {displayed_user}\n"
                 f"└─ {progress_display} | {current_time}/{total_time}\n"
-                f" └─ {transcode_emoji} {quality} {bitrate} | {product_name} (JF)```**"
+                f" └─ {transcode_emoji} {quality}{bitrate} | {product_name} (JF)```**"
             )
         except Exception as e:
             self.logger.error(f"Error formatting Jellyfin stream info: {e}")
@@ -477,12 +465,7 @@ class PlexCore(commands.Cog):
         """Format Jellyfin content title based on its type."""
         media_type = now_playing.get("Type", "Video")
 
-        if media_type == "Audio":
-            # Music track
-            artist = now_playing.get("AlbumArtist") or now_playing.get("Artists", ["Unknown Artist"])[0] if now_playing.get("Artists") else "Unknown Artist"
-            track = now_playing.get("Name", "Unknown Track")
-            return f"{artist} - {track}"
-        elif media_type == "Episode":
+        if media_type == "Episode":
             # TV episode
             series_title = now_playing.get("SeriesName", "Unknown Show").split(":")[0].split("-")[0].strip()
             season_num = now_playing.get("ParentIndexNumber", 0)
