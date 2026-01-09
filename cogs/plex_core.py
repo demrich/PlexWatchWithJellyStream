@@ -5,6 +5,7 @@ import time
 import json
 import os
 import logging
+import aiohttp
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
@@ -23,6 +24,15 @@ class PlexCore(commands.Cog):
         # Load environment variables
         self.PLEX_URL = os.getenv("PLEX_URL")
         self.PLEX_TOKEN = os.getenv("PLEX_TOKEN")
+
+        # Jellyfin configuration (optional)
+        self.JELLYFIN_URL = os.getenv("JELLYFIN_URL")
+        self.JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY")
+        self.jellyfin_enabled = bool(self.JELLYFIN_URL and self.JELLYFIN_API_KEY)
+        if self.jellyfin_enabled:
+            # Ensure URL doesn't have trailing slash
+            self.JELLYFIN_URL = self.JELLYFIN_URL.rstrip("/")
+
         channel_id = os.getenv("CHANNEL_ID")
         if channel_id is None:
             self.logger.error("CHANNEL_ID not set in .env file")
@@ -52,6 +62,12 @@ class PlexCore(commands.Cog):
         self.user_mapping = self._load_user_mapping()
         self.update_status.start()
         self.update_dashboard.start()
+
+        # Log Jellyfin status
+        if self.jellyfin_enabled:
+            self.logger.info(f"Jellyfin integration enabled: {self.JELLYFIN_URL}")
+        else:
+            self.logger.debug("Jellyfin integration not configured (JELLYFIN_URL and JELLYFIN_API_KEY not set)")
 
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from config.json with defaults if unavailable."""
@@ -340,6 +356,148 @@ class PlexCore(commands.Cog):
         year = f" ({session.year})" if hasattr(session, "year") and session.year else ""
         return f"{session.title}{year}"
 
+    # ==================== JELLYFIN STREAM METHODS ====================
+
+    async def get_jellyfin_sessions(self) -> List[Dict[str, Any]]:
+        """Fetch active sessions from Jellyfin server."""
+        if not self.jellyfin_enabled:
+            return []
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {"X-Emby-Token": self.JELLYFIN_API_KEY}
+                async with session.get(
+                    f"{self.JELLYFIN_URL}/Sessions",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status != 200:
+                        self.logger.error(f"Jellyfin API returned status {response.status}")
+                        return []
+                    sessions = await response.json()
+                    # Filter to only sessions with NowPlayingItem (active streams)
+                    active_sessions = [s for s in sessions if s.get("NowPlayingItem")]
+                    self.logger.debug(f"Found {len(active_sessions)} active Jellyfin sessions")
+                    return active_sessions
+        except aiohttp.ClientError as e:
+            self.logger.error(f"Failed to connect to Jellyfin server: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Error fetching Jellyfin sessions: {e}")
+            return []
+
+    def format_jellyfin_stream_info(self, session: Dict[str, Any], idx: int) -> str:
+        """Format Jellyfin stream details into a displayable string."""
+        try:
+            now_playing = session.get("NowPlayingItem", {})
+            play_state = session.get("PlayState", {})
+
+            # Get user name
+            user = session.get("UserName", "Unknown")
+            displayed_user = self.user_mapping.get(user, user)
+
+            # Determine content type and emoji (video only - no music library)
+            media_type = now_playing.get("Type", "Video")
+            if media_type == "Episode":
+                content_emoji = "📺"
+            else:
+                content_emoji = "🎥"
+
+            # Get formatted title
+            title = self._get_jellyfin_formatted_title(now_playing)
+
+            # Calculate progress with explicit safety check
+            position_ticks = play_state.get("PositionTicks", 0)
+            runtime_ticks = now_playing.get("RunTimeTicks", 0)
+            progress_percent = (position_ticks / runtime_ticks * 100) if runtime_ticks > 0 else 0
+
+            is_paused = play_state.get("IsPaused", False)
+            progress_display = "⏸️" if is_paused else f"[{'▓' * int(progress_percent / 10)}{'░' * (10 - int(progress_percent / 10))}] {progress_percent:.1f}%"
+
+            # Format time (ticks are in 100-nanosecond units, divide by 10_000_000 to get seconds)
+            current_seconds = position_ticks // 10_000_000
+            total_seconds = runtime_ticks // 10_000_000
+
+            current_time = self._format_jellyfin_time(current_seconds, total_seconds)
+            total_time = self._format_jellyfin_time(total_seconds, total_seconds)
+
+            # Get video quality info
+            media_streams = now_playing.get("MediaStreams", [])
+            video_stream = next((s for s in media_streams if s.get("Type") == "Video"), None)
+
+            if video_stream:
+                height = video_stream.get("Height")
+                if height and height >= 2160:
+                    quality = "4K"
+                elif height:
+                    quality = f"{height}p"
+                else:
+                    quality = "Video"
+            else:
+                quality = "Video"
+
+            # Check if transcoding
+            transcode_info = session.get("TranscodingInfo")
+            transcode_emoji = "🔄" if transcode_info else "⏯️"
+
+            # Get bitrate (only if > 0)
+            bitrate = ""
+            if transcode_info and transcode_info.get("Bitrate", 0) > 0:
+                bitrate = f" {transcode_info['Bitrate'] / 1_000_000:.1f} Mbps"
+            elif now_playing.get("Bitrate", 0) > 0:
+                bitrate = f" {now_playing['Bitrate'] / 1_000_000:.1f} Mbps"
+
+            # Get client/player name
+            client = session.get("Client", "Unknown")
+            device_name = session.get("DeviceName", "")
+            product_name = client if client != "Unknown" else device_name
+
+            return (
+                f"**```{content_emoji} {title} | {displayed_user}\n"
+                f"└─ {progress_display} | {current_time}/{total_time}\n"
+                f" └─ {transcode_emoji} {quality}{bitrate} | {product_name} (JF)```**"
+            )
+        except Exception as e:
+            self.logger.error(f"Error formatting Jellyfin stream info: {e}")
+            return f"```❓ Jellyfin stream could not be loaded (# {idx})```"
+
+    def _get_jellyfin_formatted_title(self, now_playing: Dict[str, Any]) -> str:
+        """Format Jellyfin content title based on its type."""
+        media_type = now_playing.get("Type", "Video")
+
+        if media_type == "Episode":
+            # TV episode
+            series_title = now_playing.get("SeriesName", "Unknown Show").split(":")[0].split("-")[0].strip()
+            season_num = now_playing.get("ParentIndexNumber", 0)
+            episode_num = now_playing.get("IndexNumber", 0)
+            return f"{series_title} - S{season_num:02d}E{episode_num:02d}"
+        else:
+            # Movie or other video
+            title = now_playing.get("Name", "Unknown")
+            year = now_playing.get("ProductionYear")
+            return f"{title} ({year})" if year else title
+
+    def _format_jellyfin_time(self, seconds: int, total_seconds: int) -> str:
+        """Format seconds into time string based on content duration."""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+
+        if total_seconds < 3600:
+            return f"{minutes:02d}:{secs:02d}"
+        else:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+
+    async def get_jellyfin_streams(self) -> List[str]:
+        """Retrieve formatted information about active Jellyfin streams."""
+        sessions = await self.get_jellyfin_sessions()
+        streams = []
+        for idx, session in enumerate(sessions, start=1):
+            stream_info = self.format_jellyfin_stream_info(session, idx)
+            if stream_info:
+                streams.append(stream_info)
+        return streams
+
     def get_offline_info(self) -> Dict[str, Any]:
         """Generate server info when Plex is offline, respecting config order."""
         current_time = discord.utils.utcnow()
@@ -368,10 +526,17 @@ class PlexCore(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def update_status(self) -> None:
-        """Update bot presence with Plex status and stream count."""
+        """Update bot presence with Plex/Jellyfin status and stream count."""
         try:
             info = self.get_server_info()
-            active_streams = len(info["active_users"])
+
+            # Include Jellyfin streams in the count
+            jellyfin_stream_count = 0
+            if self.jellyfin_enabled:
+                jellyfin_streams = await self.get_jellyfin_streams()
+                jellyfin_stream_count = len(jellyfin_streams)
+
+            active_streams = len(info["active_users"]) + jellyfin_stream_count
             presence_config = self.config["presence"]
             stats = info["library_stats"]
 
@@ -399,13 +564,22 @@ class PlexCore(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def update_dashboard(self) -> None:
-        """Update Discord dashboard with Plex, SABnzbd, and Uptime data."""
+        """Update Discord dashboard with Plex, Jellyfin, SABnzbd, and Uptime data."""
         channel = self.bot.get_channel(self.CHANNEL_ID)
         if not channel:
             return
 
         try:
             info = self.get_server_info()
+
+            # Fetch Jellyfin streams and combine with Plex streams
+            if self.jellyfin_enabled:
+                jellyfin_streams = await self.get_jellyfin_streams()
+                info["active_users"] = info["active_users"] + jellyfin_streams
+                info["jellyfin_stream_count"] = len(jellyfin_streams)
+            else:
+                info["jellyfin_stream_count"] = 0
+
             sabnzbd_cog = self.bot.get_cog("SABnzbd")
             if sabnzbd_cog:
                 info["downloads"] = await sabnzbd_cog.get_sabnzbd_info()

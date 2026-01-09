@@ -1,0 +1,27 @@
+services:
+  plexwatch:
+    image: ghcr.io/demrich/plexwatchwithjellystream:latest
+    container_name: plexwatch
+    restart: unless-stopped
+    environment:
+      - RUNNING_IN_DOCKER=true
+      # Discord Bot Configuration
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - CHANNEL_ID=${CHANNEL_ID}
+      - DISCORD_AUTHORIZED_USERS=${DISCORD_AUTHORIZED_USERS}
+      # Plex Configuration
+      - PLEX_URL=${PLEX_URL}
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      # Jellyfin Configuration (optional)
+      - JELLYFIN_URL=${JELLYFIN_URL:-}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      # SABnzbd Configuration (optional)
+      - SABNZBD_URL=${SABNZBD_URL:-}
+      - SABNZBD_API_KEY=${SABNZBD_API_KEY:-}
+      # Uptime Kuma Configuration (optional)
+      - UPTIME_URL=${UPTIME_URL:-}
+      - UPTIME_USERNAME=${UPTIME_USERNAME:-}
+      - UPTIME_PASSWORD=${UPTIME_PASSWORD:-}
+      - UPTIME_MONITOR_ID=${UPTIME_MONITOR_ID:-}
+    volumes:
+      - ./data:/app/data
